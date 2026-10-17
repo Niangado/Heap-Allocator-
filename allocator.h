@@ -5,9 +5,15 @@
 #include <cstddef>
 #include <stdexcept>
 #include <utility>
-#include <windows.h>w
+#include <windows.h>
+#include <bcrypt.h>
 #include <cstdint>
 #include <iostream>
+
+
+#pragma comment(lib, "bcrypt.lib") 
+
+
 
 
 
@@ -22,19 +28,34 @@ private:
         std::size_t size;
         uint32_t magic;
     };
+    static constexpr std::size_t FLAG{ 0xF };
+    static constexpr std::size_t ALLOCATED{ 1 };
 
     static constexpr std::size_t alignment{16 };
     static_assert(sizeof(UnFree_Head) == sizeof(Free_Head));
-    std::size_t heapSize;
-    void* heapStart;
-    Free_Head* head;
 
-  
+    std::uint32_t secret{};
+   
+ 
+    std::size_t heapSize;
+    void* heapStart{ nullptr };
+    Free_Head* head{ nullptr };
+
+
+    std::uint32_t getMagic(const void* header) const {
+        std::uintptr_t addr{ reinterpret_cast<std::uintptr_t>(header) };
+        addr = addr >> 4;
+        std::uint32_t addrBits{ static_cast<std::uint32_t>(addr) };
+        
+        return secret ^ addrBits;
+    }
 
 
 public:
     HeapAllocator(std::size_t hs) :heapSize{ hs } {
-
+        if (heapSize < sizeof(Free_Head) + alignment){ throw std::bad_alloc{ } ; }
+        NTSTATUS status = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&secret), sizeof(secret), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        if (!BCRYPT_SUCCESS(status)) { throw std::runtime_error{ "Failed to create secret" }; }
         heapStart = VirtualAlloc(nullptr, heapSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (heapStart == nullptr) { throw std::bad_alloc{}; }
         head = static_cast<Free_Head*>(heapStart);
@@ -54,9 +75,11 @@ public:
         this->heapStart = temp.heapStart;
         this->head = temp.head;
         this->heapSize = temp.heapSize;
+        this->secret = temp.secret;
         temp.heapStart = nullptr;
         temp.head = nullptr;
         temp.heapSize = 0;
+        temp.secret = 0;
 
 
     }
@@ -67,27 +90,24 @@ public:
         this->heapStart = temp.heapStart;
         this->head = temp.head;
         this->heapSize = temp.heapSize;
+        this->secret = temp.secret;
         temp.heapStart = nullptr;
         temp.head = nullptr;
         temp.heapSize = 0;
+        temp.secret = 0;
+
         return *this;
     }
 
-    void print() const {
-        if (head == nullptr) { std::cout << "There are no free blocks" << '\n'; return; }
-        const Free_Head* temp{ head };
-        std::uintptr_t start{ reinterpret_cast<std::uintptr_t>(heapStart) };
-        while (temp != nullptr) {
-            std::uintptr_t addr{ reinterpret_cast<std::uintptr_t>(temp) };
-            std::cout << "OffSet: " << addr - start << '\n';
-            std::cout << "Region Size: " << temp->size << '\n';
-            std::cout << "------------------------------------------------" << '\n';
-            temp = temp->next;
-        }
-
+    std::size_t grabHeader (void* p) const {
+        if (p == nullptr) { return 0; }
+       const UnFree_Head* header{ reinterpret_cast<const UnFree_Head*>(p) - 1 }; //points to block header
+        return (header->size & ~FLAG);
     }
 
+  
     void deallocate(void* p) {
+        if (heapStart == nullptr) { throw std::invalid_argument{"Heap doesnt exist"}; }
         if (p == nullptr) { return; }
         UnFree_Head* header{ reinterpret_cast<UnFree_Head*>(p) - 1 }; //points to block header
 
@@ -96,9 +116,9 @@ public:
 
         if (addr % alignment != 0) { throw std::invalid_argument{ "Memory does not align" }; }
         if ((addr - start) >= (heapSize - sizeof(Free_Head))) { throw std::invalid_argument{ "Memory not in heap" }; }
-        if (header->magic != 0xDEADBEEF) { throw std::invalid_argument{ "Integrity check failed" }; }
-
-  
+        if ((header->size & ALLOCATED) == 0) { throw std::invalid_argument{ "Memory is already free" }; }
+        if (header->magic != getMagic(header)) { throw std::invalid_argument{ "Integrity check failed" }; }
+      
          Free_Head* point{ reinterpret_cast<Free_Head*>(header) };
         Free_Head* search{ head };
         Free_Head* prev{ nullptr }; 
@@ -117,23 +137,25 @@ public:
         if (prev == nullptr) {
             point->next = head;
             head = point;
+            head->size = (head->size & ~FLAG);
            
         }
         else {
             prev->next = point;
             point->next = search;
+            point->size = (point->size & ~FLAG);
         }
 
        
 
         //coalescing
         Free_Head* first{ head };
-        Free_Head* second{ head };
+       
      
 
 
-        while (second->next != nullptr) {
-            second = second->next;
+        while (first->next != nullptr) {
+            Free_Head* second{ first->next };
             std::uintptr_t x{ reinterpret_cast<std::uintptr_t>(first) };
             std::uintptr_t y{ reinterpret_cast<std::uintptr_t>(second) };
             if ((y - x) == (first->size + sizeof(Free_Head))) {
@@ -201,10 +223,63 @@ public:
                 take->size = s;
             }
         }
-        take->magic = 0xDEADBEEF;
+        take->size = take->size | ALLOCATED;
+        take->magic = getMagic(take);
 
         return (take + 1);
     }
 
-   
+    void print() const {
+        if (head == nullptr) { std::cout << "There are no free blocks" << '\n'; return; }
+        const Free_Head* temp{ head };
+        std::uintptr_t start{ reinterpret_cast<std::uintptr_t>(heapStart) };
+        while (temp != nullptr) {
+            std::uintptr_t addr{ reinterpret_cast<std::uintptr_t>(temp) };
+            std::cout << "OffSet: " << addr - start << '\n';
+            std::cout << "Region Size: " << temp->size << '\n';
+            std::cout << "------------------------------------------------" << '\n';
+            temp = temp->next;
+        }
+
+    }
+
+    std::size_t check() const {
+        std::size_t sizeCheck{ 0 };
+        if (head == nullptr) { return sizeCheck; }
+
+        const Free_Head* temp{ head };
+        const Free_Head* prev{ nullptr };
+        std::uintptr_t start{ reinterpret_cast<std::uintptr_t>(heapStart) };
+
+        while (temp != nullptr) {
+          
+            std::uintptr_t addr{ reinterpret_cast<std::uintptr_t>(temp) };
+            if (!(start <= addr && addr < start + heapSize && addr % alignment == 0)) { throw std::logic_error{ "Check: Bounds or alignment failed" }; }
+            prev = temp;
+
+            std::uintptr_t x_prev{ reinterpret_cast<std::uintptr_t>(prev) };
+
+            if (prev->size > (start + heapSize) - addr - sizeof(Free_Head)) { throw std::logic_error{"Check: Address is not within bounds"}; }//bounds check
+            if (prev->size == 0) { throw std::logic_error{ "Check: Blocksize cannot be 0" }; }//nonzero check
+            if (prev->size % alignment != 0) { throw std::logic_error{ "Check: size not a multiple of alignment" }; }//alignment check
+            if ((prev->size & ALLOCATED) != 0) { throw std::logic_error{ "Check: free node marked as allocated" }; } //Flag check
+            sizeCheck = sizeCheck + sizeof(Free_Head) + prev->size;
+            if (sizeCheck > heapSize) { throw std::logic_error{ "Check: Total bytes exceeded heap size" }; } //total bytes check
+
+
+            temp = temp->next;
+                if (temp != nullptr) {
+                    std::uintptr_t y_temp{ reinterpret_cast<std::uintptr_t>(temp) };
+                    if (!(start < y_temp)) { throw std::logic_error{ "Check: Address is not within bounds" }; }//bounds check
+                    std::uintptr_t offSet_prevend{ addr + sizeof(Free_Head) + prev->size }; //track where prev block ends
+            
+                    if (prev >= temp) { throw std::logic_error{ "Check: Address not sorted" }; }// Sorted by address
+                    if ((y_temp - x_prev) == (prev->size + sizeof(Free_Head))) { throw std::logic_error{ "Check: List not fully coalesced" }; } //coalesced check
+                    if (offSet_prevend > y_temp) { throw std::logic_error{ "Check: Overlap" }; } // overlap between free regions check
+                   
+                }
+
+        }
+        return sizeCheck;
+    }
 };
