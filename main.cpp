@@ -8,7 +8,7 @@
 #include <cstring>
 #include<string>
 
-unsigned int seed{ 8 };
+unsigned int seed{ 54 };
 std::mt19937 gen(seed);
 
 
@@ -39,7 +39,7 @@ int main() {
     std::size_t live_bytes{ 0 };
     try {
       
-
+       
         HeapAllocator test{ heapSize };
 
 
@@ -69,7 +69,7 @@ int main() {
 
                    const unsigned char* checker{reinterpret_cast<unsigned char*>(holder[ind].ptr)};
                     std::size_t blockSize{ test.grabHeader(holder[ind].ptr) };
-                    for (std::size_t j{ 0 }; j < blockSize ; j++) {
+                  for (std::size_t j{ 0 }; j < blockSize ; j++) {
                         if (checker[j] != holder[ind].pattern) { throw std::logic_error{ "Pattern mismatch at iter " + std::to_string(i) + ", byte " + std::to_string(j) + ": expected " + std::to_string(holder[ind].pattern) + ", got " + std::to_string(checker[j]) }; }
                     }
 
@@ -83,7 +83,7 @@ int main() {
             assert((free_bytes + live_bytes) == heapSize);
         }
 
-        for (const auto& temp : holder) {
+       for (const auto& temp : holder) {
             test.deallocate(temp.ptr);
        }
 

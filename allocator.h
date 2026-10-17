@@ -15,8 +15,6 @@
 
 
 
-
-
 class HeapAllocator {
 private:
     struct Free_Head {
@@ -35,7 +33,7 @@ private:
     static_assert(sizeof(UnFree_Head) == sizeof(Free_Head));
 
     std::uint32_t secret{};
-   
+    std::uintptr_t pointerSecrert{};
  
     std::size_t heapSize;
     void* heapStart{ nullptr };
@@ -50,12 +48,46 @@ private:
         return secret ^ addrBits;
     }
 
+    void encodeNext(){
+
+    }
+
+    void decodeNext(){}
+
+    bool validateNext(const Free_Head *cur, const Free_Head *next, bool allowTouch) const {
+        if (next == nullptr) { return true; }
+        std::uintptr_t start{ reinterpret_cast<std::uintptr_t>(heapStart) };
+        std::uintptr_t addr{ reinterpret_cast<std::uintptr_t>(next) };
+        std::uintptr_t curAddr{ reinterpret_cast<std::uintptr_t>(cur) };
+
+        if (!(start <= addr && addr < start + heapSize && addr % alignment == 0)) { return false; }
+        if (allowTouch) {
+            if (addr < (curAddr + sizeof(Free_Head) + cur->size)) { return false; }
+        }
+        else {
+
+            if (addr <= (curAddr + sizeof(Free_Head) + cur->size)) { return false; }
+        }
+
+        if ((next->size & ALLOCATED) != 0) { return false; } 
+        if (next->size == 0) { return false; }
+        if (next->size > (start + heapSize) - addr - sizeof(Free_Head)) { return false; }
+        
+
+        
+        if (next->size % alignment != 0) { return false; }
+
+        return true;
+    }
+        
 
 public:
     HeapAllocator(std::size_t hs) :heapSize{ hs } {
         if (heapSize < sizeof(Free_Head) + alignment){ throw std::bad_alloc{ } ; }
         NTSTATUS status = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&secret), sizeof(secret), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        NTSTATUS status2 = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&pointerSecrert), sizeof(pointerSecrert), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
         if (!BCRYPT_SUCCESS(status)) { throw std::runtime_error{ "Failed to create secret" }; }
+        if (!BCRYPT_SUCCESS(status2)) { throw std::runtime_error{ "Failed to create Pointer secret" }; }
         heapStart = VirtualAlloc(nullptr, heapSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
         if (heapStart == nullptr) { throw std::bad_alloc{}; }
         head = static_cast<Free_Head*>(heapStart);
@@ -76,10 +108,12 @@ public:
         this->head = temp.head;
         this->heapSize = temp.heapSize;
         this->secret = temp.secret;
+        this->pointerSecrert = temp.pointerSecrert;
         temp.heapStart = nullptr;
         temp.head = nullptr;
         temp.heapSize = 0;
         temp.secret = 0;
+        temp.pointerSecrert = 0;
 
 
     }
@@ -91,10 +125,12 @@ public:
         this->head = temp.head;
         this->heapSize = temp.heapSize;
         this->secret = temp.secret;
+        this->pointerSecrert = temp.pointerSecrert;
         temp.heapStart = nullptr;
         temp.head = nullptr;
         temp.heapSize = 0;
         temp.secret = 0;
+        temp.pointerSecrert = 0;
 
         return *this;
     }
@@ -128,6 +164,8 @@ public:
             if (search == point) { throw std::invalid_argument{ "Double free" }; }
             if (search < point) {
                 prev = search;
+                if (!validateNext(search, search->next,false)) { throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
+              
                 search = search->next;
             }
             else { break; }
@@ -155,6 +193,7 @@ public:
 
 
         while (first->next != nullptr) {
+            if (!validateNext(first, first->next, true)) { throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
             Free_Head* second{ first->next };
             std::uintptr_t x{ reinterpret_cast<std::uintptr_t>(first) };
             std::uintptr_t y{ reinterpret_cast<std::uintptr_t>(second) };
@@ -181,6 +220,7 @@ public:
         while (search != nullptr) {
             if (s > search->size) {
                 prev = search;
+                if(!(validateNext(search, search->next,false))){ throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
                 search = search->next;
             }
             else { break; }
