@@ -17,6 +17,7 @@
 
 class HeapAllocator {
 private:
+    
     struct Free_Head {
         std::size_t size;
         Free_Head* next;
@@ -33,7 +34,7 @@ private:
     static_assert(sizeof(UnFree_Head) == sizeof(Free_Head));
 
     std::uint32_t secret{};
-    std::uintptr_t pointerSecrert{};
+    std::uintptr_t pointerSecret{};
  
     std::size_t heapSize;
     void* heapStart{ nullptr };
@@ -48,11 +49,18 @@ private:
         return secret ^ addrBits;
     }
 
-    void encodeNext(){
-
+    std::uintptr_t encodeNext(const Free_Head* node, const Free_Head* next)const {
+        std::uintptr_t addr{ reinterpret_cast<std::uintptr_t>(node) };
+        std::uintptr_t addr_next{ reinterpret_cast<std::uintptr_t>(next) };
+        return (addr_next ^ pointerSecret) ^ addr;
     }
 
-    void decodeNext(){}
+    Free_Head* decodeNext(const Free_Head* node, const std::uintptr_t store)const {
+        std::uintptr_t addr{ reinterpret_cast<std::uintptr_t>(node) };
+        std::uintptr_t decode{ (store ^ addr) ^ pointerSecret };
+        Free_Head* realLocation{ reinterpret_cast<Free_Head*>(decode) };
+        return realLocation;
+    }
 
     bool validateNext(const Free_Head *cur, const Free_Head *next, bool allowTouch) const {
         if (next == nullptr) { return true; }
@@ -85,7 +93,7 @@ public:
     HeapAllocator(std::size_t hs) :heapSize{ hs } {
         if (heapSize < sizeof(Free_Head) + alignment){ throw std::bad_alloc{ } ; }
         NTSTATUS status = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&secret), sizeof(secret), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
-        NTSTATUS status2 = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&pointerSecrert), sizeof(pointerSecrert), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+        NTSTATUS status2 = BCryptGenRandom(nullptr, reinterpret_cast<PUCHAR>(&pointerSecret), sizeof(pointerSecret), BCRYPT_USE_SYSTEM_PREFERRED_RNG);
         if (!BCRYPT_SUCCESS(status)) { throw std::runtime_error{ "Failed to create secret" }; }
         if (!BCRYPT_SUCCESS(status2)) { throw std::runtime_error{ "Failed to create Pointer secret" }; }
         heapStart = VirtualAlloc(nullptr, heapSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
@@ -108,12 +116,12 @@ public:
         this->head = temp.head;
         this->heapSize = temp.heapSize;
         this->secret = temp.secret;
-        this->pointerSecrert = temp.pointerSecrert;
+        this->pointerSecret = temp.pointerSecret;
         temp.heapStart = nullptr;
         temp.head = nullptr;
         temp.heapSize = 0;
         temp.secret = 0;
-        temp.pointerSecrert = 0;
+        temp.pointerSecret = 0;
 
 
     }
@@ -125,12 +133,12 @@ public:
         this->head = temp.head;
         this->heapSize = temp.heapSize;
         this->secret = temp.secret;
-        this->pointerSecrert = temp.pointerSecrert;
+        this->pointerSecret = temp.pointerSecret;
         temp.heapStart = nullptr;
         temp.head = nullptr;
         temp.heapSize = 0;
         temp.secret = 0;
-        temp.pointerSecrert = 0;
+        temp.pointerSecret = 0;
 
         return *this;
     }
@@ -322,4 +330,7 @@ public:
         }
         return sizeCheck;
     }
+
+
+   
 };
