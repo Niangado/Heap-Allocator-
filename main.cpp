@@ -7,7 +7,7 @@
 #include <cstring>
 #include<string>
 
-unsigned int seed{ 54 };
+unsigned int seed{ 5 };
 std::mt19937 gen(seed);
 
 

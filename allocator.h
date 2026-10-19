@@ -20,7 +20,7 @@ private:
     
     struct Free_Head {
         std::size_t size;
-        Free_Head* next;
+        std::uintptr_t next;
     };
 
     struct UnFree_Head {
@@ -100,7 +100,7 @@ public:
         if (heapStart == nullptr) { throw std::bad_alloc{}; }
         head = static_cast<Free_Head*>(heapStart);
         head->size = heapSize - sizeof(Free_Head);
-        head->next = nullptr;
+        head->next = encodeNext(head, nullptr);
 
     }
 
@@ -172,23 +172,23 @@ public:
             if (search == point) { throw std::invalid_argument{ "Double free" }; }
             if (search < point) {
                 prev = search;
-                if (!validateNext(search, search->next,false)) { throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
+                if (!validateNext(search, decodeNext(search, search->next),false)) { throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
               
-                search = search->next;
+                search = decodeNext(search, search->next);
             }
             else { break; }
 
         }
 
         if (prev == nullptr) {
-            point->next = head;
+            point->next = encodeNext(point, head);
             head = point;
             head->size = (head->size & ~FLAG);
            
         }
         else {
-            prev->next = point;
-            point->next = search;
+            prev->next = encodeNext(prev, point);
+            point->next = encodeNext(point, search);
             point->size = (point->size & ~FLAG);
         }
 
@@ -197,20 +197,18 @@ public:
         //coalescing
         Free_Head* first{ head };
        
-     
 
-
-        while (first->next != nullptr) {
-            if (!validateNext(first, first->next, true)) { throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
-            Free_Head* second{ first->next };
+        while (decodeNext(first, first->next) != nullptr) {
+            if (!validateNext(first, decodeNext(first, first->next) , true)) { throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
+            Free_Head* second{ decodeNext(first, first->next) };
             std::uintptr_t x{ reinterpret_cast<std::uintptr_t>(first) };
             std::uintptr_t y{ reinterpret_cast<std::uintptr_t>(second) };
             if ((y - x) == (first->size + sizeof(Free_Head))) {
                 first->size = first->size + second->size + sizeof(Free_Head);
-                first->next = second->next;
+                first->next = encodeNext(first, decodeNext(second, second->next)); // second->next is encoded with seconds address
             }
             else {
-                first = first->next;
+                first = decodeNext(first, first->next);
             }
 
         }
@@ -228,8 +226,8 @@ public:
         while (search != nullptr) {
             if (s > search->size) {
                 prev = search;
-                if(!(validateNext(search, search->next,false))){ throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
-                search = search->next;
+                if(!(validateNext(search, decodeNext(search, search->next) ,false))){ throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
+                search = decodeNext(search, search->next);
             }
             else { break; }
 
@@ -238,8 +236,8 @@ public:
         if (search == nullptr) { throw std::bad_alloc{}; }
 
         std::size_t regionSize{ search->size };
-        Free_Head* regionNext{ search->next };
-
+        Free_Head* regionNext{ decodeNext(search, search->next) };
+        if (!(validateNext(search, regionNext, false))) { throw std::runtime_error{ "Heap corruption: invalid free-list pointer" }; }
         UnFree_Head* take{ reinterpret_cast<UnFree_Head*>(search) };
 
      
@@ -253,21 +251,21 @@ public:
                 Free_Head* leftOver{ reinterpret_cast<Free_Head*>(reinterpret_cast<char*>(take) + sizeof(UnFree_Head) + s) };
                 head = leftOver;
                 head->size = regionSize - (s + sizeof(Free_Head));
-                head->next = regionNext;
+                head->next = encodeNext(head, regionNext);
                 take->size = s;
             }
         }
         else {
             if (regionSize < s + sizeof(Free_Head) + alignment) {
                 take->size = regionSize;
-                prev->next = regionNext;
+                prev->next = encodeNext(prev, regionNext);
 
             }
             else {
                 Free_Head* leftOver{ reinterpret_cast<Free_Head*>(reinterpret_cast<char*>(take) + sizeof(UnFree_Head) + s) };
                 leftOver->size = regionSize - (s + sizeof(Free_Head));
-                leftOver->next = regionNext;
-                prev->next = leftOver;
+                leftOver->next = encodeNext(leftOver, regionNext);
+                prev->next = encodeNext(prev, leftOver);
                 take->size = s;
             }
         }
@@ -286,7 +284,7 @@ public:
             std::cout << "OffSet: " << addr - start << '\n';
             std::cout << "Region Size: " << temp->size << '\n';
             std::cout << "------------------------------------------------" << '\n';
-            temp = temp->next;
+            temp = decodeNext(temp, temp->next);
         }
 
     }
@@ -315,7 +313,7 @@ public:
             if (sizeCheck > heapSize) { throw std::logic_error{ "Check: Total bytes exceeded heap size" }; } //total bytes check
 
 
-            temp = temp->next;
+            temp = decodeNext(temp, temp->next);
                 if (temp != nullptr) {
                     std::uintptr_t y_temp{ reinterpret_cast<std::uintptr_t>(temp) };
                     if (!(start < y_temp)) { throw std::logic_error{ "Check: Address is not within bounds" }; }//bounds check
